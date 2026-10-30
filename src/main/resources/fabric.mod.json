@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "id": "chesbonefiller",
+  "id": "chestbonefiller",
   "version": "1.0.0",
-  "name": "ChesBoneFiller",
+  "name": "ChestBoneFiller",
   "description": "Chest select karke shop se bones kharidta hai aur chest me bharta hai.",
   "authors": ["TumharaNaam"],
   "license": "MIT",
   "environment": "client",
   "entrypoints": {
-    "client": ["com.example.chesbonefiller.BoneMacro"]
+    "client": ["com.example.chestbonefiller.client.ChestBoneFillerClient"]
   },
   "depends": {
     "fabricloader": ">=0.16.0",
