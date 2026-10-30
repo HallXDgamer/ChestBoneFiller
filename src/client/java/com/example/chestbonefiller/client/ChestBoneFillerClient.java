@@ -31,15 +31,16 @@ import java.util.List;
 
 public class ChestBoneFillerClient implements ClientModInitializer {
 
-    // chest kitni door tak open ho sakta hai (blocks). Reach 4.5 hai.
-    static final double REACH = 4.5;
+    static final double REACH = 4.5;       // chest kholne ki max doori (blocks)
+    static final int BONE_SLOT = 20;       // bone wali slot (mob drops menu)
+    static final int BUY_SLOT = 26;        // 36 wali bone (buy more menu)
 
     static final List<BlockPos> chests = new ArrayList<>();
     static boolean selectorOn = false;
 
-    static int idx = 0;          // abhi kaunsa chest
+    static int idx = 0;
     static int state = 0;        // 0 = idle
-    static int wait = 0;         // ticks (20 = 1 sec)
+    static int wait = 0;
     static int lastBones = -1;
     static int stuck = 0;
     static int timeouts = 0;
@@ -69,11 +70,8 @@ public class ChestBoneFillerClient implements ClientModInitializer {
             BlockPos pos = hitResult.getBlockPos();
             BlockState bs = level.getBlockState(pos);
             if (!bs.is(Blocks.CHEST) && !bs.is(Blocks.TRAPPED_CHEST)) return InteractionResult.PASS;
-
-            // chest na khule, dono hands ke liye cancel
             if (hand != InteractionHand.MAIN_HAND) return InteractionResult.FAIL;
 
-            // double chest ka doosra half
             BlockPos other = null;
             if (bs.getValue(ChestBlock.TYPE) != ChestType.SINGLE) {
                 other = pos.relative(ChestBlock.getConnectedDirection(bs));
@@ -114,10 +112,14 @@ public class ChestBoneFillerClient implements ClientModInitializer {
             }
         }
 
-        // H: stop
-        while (stopKey.consumeClick()) {
+        // H: stop (GUI khula ho tab bhi chalega)
+        boolean stopHeld = GLFW.glfwGetKey(GLFW.glfwGetCurrentContext(), GLFW.GLFW_KEY_H) == GLFW.GLFW_PRESS;
+        while (stopKey.consumeClick()) { stopHeld = true; }
+        if (stopHeld && state != 0) {
             state = 0;
+            mc.player.closeContainer();
             msg(mc, "Stopped");
+            return;
         }
 
         // G: start
@@ -145,21 +147,25 @@ public class ChestBoneFillerClient implements ClientModInitializer {
                 mc.player.connection.sendCommand("shop");
                 state = 2; wait = 20;
             }
-            // 2) Mod Drops
-            case 2 -> { if (clickByName(mc, "Mod Drops")) { state = 3; wait = 15; } else timeout(mc); }
-            // 3) Bone
-            case 3 -> { if (clickByName(mc, "Bone"))      { state = 4; wait = 15; } else timeout(mc); }
+            // 2) Mob Drops / Mod Drops
+            case 2 -> {
+                if (clickByAnyName(mc, "mob drops", "mod drops", "drops")) { state = 3; wait = 15; }
+                else timeout(mc);
+            }
+            // 3) Bone (slot 20, nahi to naam se)
+            case 3 -> {
+                if (clickSlotIfBone(mc, BONE_SLOT, false) || clickByAnyName(mc, "bone")) {
+                    state = 4; wait = 15;
+                } else timeout(mc);
+            }
             // 4) Buy More
-            case 4 -> { if (clickByName(mc, "Buy More"))  { state = 5; wait = 15; } else timeout(mc); }
+            case 4 -> {
+                if (clickByAnyName(mc, "buy more", "more")) { state = 5; wait = 15; }
+                else timeout(mc);
+            }
             // 5) 36 wali bone (slot 26)
             case 5 -> {
-                if (!(mc.screen instanceof AbstractContainerScreen<?> s)) { timeout(mc); return; }
-                AbstractContainerMenu h = s.getMenu();
-                if (h.slots.size() <= 26) { timeout(mc); return; }
-                Slot slot = h.slots.get(26);
-                if (slot.getItem().is(Items.BONE)) {
-                    mc.gameMode.handleInventoryMouseClick(h.containerId, 26, 0, ClickType.PICKUP, mc.player);
-                    timeouts = 0;
+                if (clickSlotIfBone(mc, BUY_SLOT, true)) {
                     justBought = true;
                     state = 6; wait = 15;
                 } else timeout(mc);
@@ -174,7 +180,6 @@ public class ChestBoneFillerClient implements ClientModInitializer {
                 }
                 BlockPos cp = chests.get(idx);
 
-                // reach se bahar ho to skip
                 if (mc.player.getEyePosition().distanceTo(Vec3.atCenterOf(cp)) > REACH + 0.5) {
                     msg(mc, "Chest door hai, skip: " + cp.toShortString());
                     idx++;
@@ -234,25 +239,55 @@ public class ChestBoneFillerClient implements ClientModInitializer {
         }
     }
 
+    // ~5 sec tak step na ho paye to ruk jao aur screen ke items chat me dikhao
     void timeout(Minecraft mc) {
-        if (++timeouts > 100) {   // ~5 sec tak GUI nahi mila
+        if (++timeouts > 100) {
             timeouts = 0;
+            int failedStep = state;
             state = 0;
-            msg(mc, "GUI nahi mila, stopped (slot ka naam check karo)");
+            msg(mc, "Step " + failedStep + " par ruk gaya (2=Drops, 3=Bone, 4=Buy More, 5=slot 26, 7=chest)");
+            if (mc.screen instanceof AbstractContainerScreen<?> s) {
+                AbstractContainerMenu h = s.getMenu();
+                int top = h.slots.size() - 36;
+                for (int i = 0; i < top; i++) {
+                    Slot slot = h.slots.get(i);
+                    if (!slot.getItem().isEmpty()) {
+                        msg(mc, i + " : " + slot.getItem().getHoverName().getString());
+                    }
+                }
+            } else {
+                msg(mc, "Koi GUI khula hi nahi tha");
+            }
         }
     }
 
-    boolean clickByName(Minecraft mc, String name) {
+    // diye hue slot par bone ho to click karo
+    boolean clickSlotIfBone(Minecraft mc, int slotIndex, boolean mustBeInTopGui) {
         if (!(mc.screen instanceof AbstractContainerScreen<?> s)) return false;
         AbstractContainerMenu h = s.getMenu();
-        for (Slot slot : h.slots) {
-            if (slot.getItem().isEmpty()) continue;
-            String n = slot.getItem().getHoverName().getString().toLowerCase();
-            if (n.contains(name.toLowerCase())) {
-                mc.gameMode.handleInventoryMouseClick(h.containerId, slot.index, 0,
-                    ClickType.PICKUP, mc.player);
-                timeouts = 0;
-                return true;
+        if (h.slots.size() <= slotIndex) return false;
+        if (!h.slots.get(slotIndex).getItem().is(Items.BONE)) return false;
+        mc.gameMode.handleInventoryMouseClick(h.containerId, slotIndex, 0, ClickType.PICKUP, mc.player);
+        timeouts = 0;
+        return true;
+    }
+
+    // upar ki GUI me naam se item dhundo (pehla naam jo mile). Naam ke kisi bhi hisse se match.
+    boolean clickByAnyName(Minecraft mc, String... names) {
+        if (!(mc.screen instanceof AbstractContainerScreen<?> s)) return false;
+        AbstractContainerMenu h = s.getMenu();
+        int top = h.slots.size() - 36;
+        for (String name : names) {
+            for (int i = 0; i < top; i++) {
+                Slot slot = h.slots.get(i);
+                if (slot.getItem().isEmpty()) continue;
+                String n = slot.getItem().getHoverName().getString().toLowerCase();
+                if (n.contains(name.toLowerCase())) {
+                    mc.gameMode.handleInventoryMouseClick(h.containerId, slot.index, 0,
+                        ClickType.PICKUP, mc.player);
+                    timeouts = 0;
+                    return true;
+                }
             }
         }
         return false;
