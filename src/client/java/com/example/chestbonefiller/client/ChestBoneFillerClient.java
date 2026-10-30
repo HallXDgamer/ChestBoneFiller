@@ -5,6 +5,7 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
@@ -26,14 +27,17 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 import org.lwjgl.glfw.GLFW;
 
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public class ChestBoneFillerClient implements ClientModInitializer {
 
-    static final double REACH = 4.5;       // chest kholne ki max doori (blocks)
-    static final int BONE_SLOT = 20;       // bone wali slot (mob drops menu)
-    static final int BUY_SLOT = 26;        // 36 wali bone (buy more menu)
+    static final double REACH = 4.5;          // chest kholne ki max doori (blocks)
+    static final int BONE_SLOT = 20;          // Mod Drops menu me bone (pehle ye slot try hoga)
+    static final int BUY_SLOT = 26;           // 36 wali bone
+    static final int CLICKS_PER_TICK = 9;     // chest me ek baar me kitni stacks
 
     static final List<BlockPos> chests = new ArrayList<>();
     static boolean selectorOn = false;
@@ -97,6 +101,23 @@ public class ChestBoneFillerClient implements ClientModInitializer {
         }
     }
 
+    // naam ko saaf karo: colour codes, small caps, custom icons, spaces sab hata do
+    static String normalize(String s) {
+        if (s == null) return "";
+        s = ChatFormatting.stripFormatting(s);
+        if (s == null) return "";
+        String small = "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢ";
+        StringBuilder sb = new StringBuilder();
+        for (char c : s.toCharArray()) {
+            int i = small.indexOf(c);
+            if (i >= 0) sb.append((char) ('a' + i));
+            else if (c >= '\uE000' && c <= '\uF8FF') continue;   // custom font icons
+            else sb.append(c);
+        }
+        return Normalizer.normalize(sb, Normalizer.Form.NFKC)
+                .toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
+    }
+
     void tick(Minecraft mc) {
         if (mc.player == null || mc.gameMode == null || mc.level == null) return;
 
@@ -147,25 +168,24 @@ public class ChestBoneFillerClient implements ClientModInitializer {
                 mc.player.connection.sendCommand("shop");
                 state = 2; wait = 20;
             }
-            // 2) Mob Drops / Mod Drops
+            // 2) Mod Drops
             case 2 -> {
-                if (clickByAnyName(mc, "mob drops", "mod drops", "drops")) { state = 3; wait = 15; }
+                if (clickByAnyName(mc, "moddrops", "mobdrops", "drops")) { state = 3; wait = 15; }
                 else timeout(mc);
             }
-            // 3) Bone (slot 20, nahi to naam se)
+            // 3) Bone (pehle slot 20, nahi to pehli bone jo mile)
             case 3 -> {
-                if (clickSlotIfBone(mc, BONE_SLOT, false) || clickByAnyName(mc, "bone")) {
-                    state = 4; wait = 15;
-                } else timeout(mc);
+                if (clickBoneAt(mc, BONE_SLOT) || clickFirstBone(mc)) { state = 4; wait = 15; }
+                else timeout(mc);
             }
             // 4) Buy More
             case 4 -> {
-                if (clickByAnyName(mc, "buy more", "more")) { state = 5; wait = 15; }
+                if (clickByAnyName(mc, "buymore", "more")) { state = 5; wait = 15; }
                 else timeout(mc);
             }
             // 5) 36 wali bone (slot 26)
             case 5 -> {
-                if (clickSlotIfBone(mc, BUY_SLOT, true)) {
+                if (clickBoneAt(mc, BUY_SLOT)) {
                     justBought = true;
                     state = 6; wait = 15;
                 } else timeout(mc);
@@ -215,7 +235,7 @@ public class ChestBoneFillerClient implements ClientModInitializer {
                     mc.player.closeContainer();
                     if (justBought) {
                         state = 0;
-                        msg(mc, "Bones nahi mile (paise ya shop check karo), stopped");
+                        msg(mc, "Bones nahi mile (paise ya inventory space check karo), stopped");
                     } else {
                         state = 1; wait = 10;
                     }
@@ -232,9 +252,15 @@ public class ChestBoneFillerClient implements ClientModInitializer {
                 }
 
                 justBought = false;
-                mc.gameMode.handleInventoryMouseClick(h.containerId, firstBone, 0,
-                    ClickType.QUICK_MOVE, mc.player);
-                wait = 3;
+                int clicks = 0;
+                for (int i = chestSize; i < h.slots.size() && clicks < CLICKS_PER_TICK; i++) {
+                    if (h.slots.get(i).getItem().is(Items.BONE)) {
+                        mc.gameMode.handleInventoryMouseClick(h.containerId, i, 0,
+                            ClickType.QUICK_MOVE, mc.player);
+                        clicks++;
+                    }
+                }
+                wait = 2;
             }
         }
     }
@@ -245,7 +271,7 @@ public class ChestBoneFillerClient implements ClientModInitializer {
             timeouts = 0;
             int failedStep = state;
             state = 0;
-            msg(mc, "Step " + failedStep + " par ruk gaya (2=Drops, 3=Bone, 4=Buy More, 5=slot 26, 7=chest)");
+            msg(mc, "Step " + failedStep + " par ruk gaya (2=Mod Drops, 3=Bone, 4=Buy More, 5=slot 26, 7=chest)");
             if (mc.screen instanceof AbstractContainerScreen<?> s) {
                 AbstractContainerMenu h = s.getMenu();
                 int top = h.slots.size() - 36;
@@ -262,27 +288,43 @@ public class ChestBoneFillerClient implements ClientModInitializer {
     }
 
     // diye hue slot par bone ho to click karo
-    boolean clickSlotIfBone(Minecraft mc, int slotIndex, boolean mustBeInTopGui) {
+    boolean clickBoneAt(Minecraft mc, int slotIndex) {
         if (!(mc.screen instanceof AbstractContainerScreen<?> s)) return false;
         AbstractContainerMenu h = s.getMenu();
-        if (h.slots.size() <= slotIndex) return false;
+        if (h.slots.size() - 36 <= slotIndex) return false;
         if (!h.slots.get(slotIndex).getItem().is(Items.BONE)) return false;
         mc.gameMode.handleInventoryMouseClick(h.containerId, slotIndex, 0, ClickType.PICKUP, mc.player);
         timeouts = 0;
         return true;
     }
 
-    // upar ki GUI me naam se item dhundo (pehla naam jo mile). Naam ke kisi bhi hisse se match.
+    // upar ki GUI me pehli bone dhundo
+    boolean clickFirstBone(Minecraft mc) {
+        if (!(mc.screen instanceof AbstractContainerScreen<?> s)) return false;
+        AbstractContainerMenu h = s.getMenu();
+        int top = h.slots.size() - 36;
+        for (int i = 0; i < top; i++) {
+            if (h.slots.get(i).getItem().is(Items.BONE)) {
+                mc.gameMode.handleInventoryMouseClick(h.containerId, i, 0, ClickType.PICKUP, mc.player);
+                timeouts = 0;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // upar ki GUI me naam se item dhundo (normalize ke baad match)
     boolean clickByAnyName(Minecraft mc, String... names) {
         if (!(mc.screen instanceof AbstractContainerScreen<?> s)) return false;
         AbstractContainerMenu h = s.getMenu();
         int top = h.slots.size() - 36;
         for (String name : names) {
+            String want = normalize(name);
             for (int i = 0; i < top; i++) {
                 Slot slot = h.slots.get(i);
                 if (slot.getItem().isEmpty()) continue;
-                String n = slot.getItem().getHoverName().getString().toLowerCase();
-                if (n.contains(name.toLowerCase())) {
+                String n = normalize(slot.getItem().getHoverName().getString());
+                if (n.contains(want)) {
                     mc.gameMode.handleInventoryMouseClick(h.containerId, slot.index, 0,
                         ClickType.PICKUP, mc.player);
                     timeouts = 0;
