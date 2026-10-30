@@ -1,24 +1,24 @@
 package com.example.chestbonefiller.client;
 
+import com.mojang.blaze3d.platform.InputConstants;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.screen.ingame.HandledScreen;
-import net.minecraft.client.option.KeyBinding;
-import net.minecraft.client.util.InputUtil;
-import net.minecraft.item.Items;
-import net.minecraft.screen.ScreenHandler;
-import net.minecraft.screen.slot.Slot;
-import net.minecraft.screen.slot.SlotActionType;
-import net.minecraft.text.Text;
-import net.minecraft.util.Hand;
-import net.minecraft.util.Identifier;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.hit.HitResult;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Direction;
-import net.minecraft.util.math.Vec3d;
+import net.minecraft.client.KeyMapping;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.ClickType;
+import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
 import org.lwjgl.glfw.GLFW;
 
 public class ChestBoneFillerClient implements ClientModInitializer {
@@ -33,33 +33,33 @@ public class ChestBoneFillerClient implements ClientModInitializer {
     static int stuck = 0;
     static int timeouts = 0;
 
-    KeyBinding selectKey, startKey, stopKey;
+    KeyMapping selectKey, startKey, stopKey;
 
     @Override
     public void onInitializeClient() {
-        KeyBinding.Category category =
-            KeyBinding.Category.create(Identifier.of("chestbonefiller", "main"));
+        KeyMapping.Category category =
+            KeyMapping.Category.register(Identifier.fromNamespaceAndPath("chestbonefiller", "main"));
 
-        selectKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.chestbonefiller.select", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_R, category));
-        startKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.chestbonefiller.start", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_G, category));
-        stopKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.chestbonefiller.stop", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_H, category));
+        selectKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
+            "key.chestbonefiller.select", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_R, category));
+        startKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
+            "key.chestbonefiller.start", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_G, category));
+        stopKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
+            "key.chestbonefiller.stop", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_H, category));
 
         ClientTickEvents.END_CLIENT_TICK.register(this::tick);
     }
 
-    void msg(MinecraftClient mc, String s) {
-        mc.player.sendMessage(Text.literal("[ChestBoneFiller] " + s), false);
+    void msg(Minecraft mc, String s) {
+        mc.player.displayClientMessage(Component.literal("[ChestBoneFiller] " + s), false);
     }
 
-    void tick(MinecraftClient mc) {
-        if (mc.player == null || mc.interactionManager == null) return;
+    void tick(Minecraft mc) {
+        if (mc.player == null || mc.gameMode == null) return;
 
         // chest select: chest ko dekh ke R
-        while (selectKey.wasPressed()) {
-            if (mc.crosshairTarget instanceof BlockHitResult hit
+        while (selectKey.consumeClick()) {
+            if (mc.hitResult instanceof BlockHitResult hit
                     && hit.getType() == HitResult.Type.BLOCK) {
                 chestPos = hit.getBlockPos();
                 msg(mc, "Chest selected: " + chestPos.toShortString());
@@ -69,13 +69,13 @@ public class ChestBoneFillerClient implements ClientModInitializer {
         }
 
         // stop: H
-        while (stopKey.wasPressed()) {
+        while (stopKey.consumeClick()) {
             state = 0;
             msg(mc, "Stopped");
         }
 
         // start: G
-        while (startKey.wasPressed()) {
+        while (startKey.consumeClick()) {
             if (chestPos == null) {
                 msg(mc, "Pehle chest select karo (R)");
             } else {
@@ -90,7 +90,7 @@ public class ChestBoneFillerClient implements ClientModInitializer {
         switch (state) {
             // 1) /shop
             case 1 -> {
-                mc.player.networkHandler.sendChatCommand("shop");
+                mc.player.connection.sendCommand("shop");
                 state = 2; wait = 20;
             }
             // 2) Mod Drops
@@ -101,28 +101,28 @@ public class ChestBoneFillerClient implements ClientModInitializer {
             case 4 -> { if (clickByName(mc, "Buy More"))  { state = 5; wait = 15; } else timeout(mc); }
             // 5) 36 wali bone (slot 26)
             case 5 -> {
-                if (!(mc.currentScreen instanceof HandledScreen<?> s)) { timeout(mc); return; }
-                ScreenHandler h = s.getScreenHandler();
+                if (!(mc.screen instanceof AbstractContainerScreen<?> s)) { timeout(mc); return; }
+                AbstractContainerMenu h = s.getMenu();
                 if (h.slots.size() <= 26) { timeout(mc); return; }
                 Slot slot = h.slots.get(26);
-                if (slot.getStack().isOf(Items.BONE)) {
-                    mc.interactionManager.clickSlot(h.syncId, 26, 0, SlotActionType.PICKUP, mc.player);
+                if (slot.getItem().is(Items.BONE)) {
+                    mc.gameMode.handleInventoryMouseClick(h.containerId, 26, 0, ClickType.PICKUP, mc.player);
                     timeouts = 0;
                     state = 6; wait = 15;
                 } else timeout(mc);
             }
             // 6) selected chest kholo
             case 6 -> {
-                mc.player.closeHandledScreen();
+                mc.player.closeContainer();
                 BlockHitResult hit = new BlockHitResult(
-                    Vec3d.ofCenter(chestPos), Direction.UP, chestPos, false);
-                mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
+                    Vec3.atCenterOf(chestPos), Direction.UP, chestPos, false);
+                mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, hit);
                 state = 7; wait = 10; lastBones = -1; stuck = 0; timeouts = 0;
             }
             // 7) bones chest me shift-click
             case 7 -> {
-                if (!(mc.currentScreen instanceof HandledScreen<?> s)) { timeout(mc); return; }
-                ScreenHandler h = s.getScreenHandler();
+                if (!(mc.screen instanceof AbstractContainerScreen<?> s)) { timeout(mc); return; }
+                AbstractContainerMenu h = s.getMenu();
                 int chestSize = h.slots.size() - 36;
                 if (chestSize <= 0) { timeout(mc); return; }
                 timeouts = 0;
@@ -130,15 +130,15 @@ public class ChestBoneFillerClient implements ClientModInitializer {
                 int bones = 0;
                 int firstBone = -1;
                 for (int i = chestSize; i < h.slots.size(); i++) {
-                    if (h.slots.get(i).getStack().isOf(Items.BONE)) {
-                        bones += h.slots.get(i).getStack().getCount();
+                    if (h.slots.get(i).getItem().is(Items.BONE)) {
+                        bones += h.slots.get(i).getItem().getCount();
                         if (firstBone == -1) firstBone = i;
                     }
                 }
 
                 // inventory me bones khatam
                 if (firstBone == -1) {
-                    mc.player.closeHandledScreen();
+                    mc.player.closeContainer();
                     if (LOOP) { state = 1; wait = 20; }
                     else { state = 0; msg(mc, "Done"); }
                     return;
@@ -148,20 +148,20 @@ public class ChestBoneFillerClient implements ClientModInitializer {
                 if (bones == lastBones) stuck++; else stuck = 0;
                 lastBones = bones;
                 if (stuck >= 5) {
-                    mc.player.closeHandledScreen();
+                    mc.player.closeContainer();
                     state = 0;
                     msg(mc, "Chest full, stopped");
                     return;
                 }
 
-                mc.interactionManager.clickSlot(h.syncId, firstBone, 0,
-                    SlotActionType.QUICK_MOVE, mc.player);
+                mc.gameMode.handleInventoryMouseClick(h.containerId, firstBone, 0,
+                    ClickType.QUICK_MOVE, mc.player);
                 wait = 3;
             }
         }
     }
 
-    void timeout(MinecraftClient mc) {
+    void timeout(Minecraft mc) {
         if (++timeouts > 100) {   // ~5 sec tak GUI nahi mila
             timeouts = 0;
             state = 0;
@@ -169,15 +169,15 @@ public class ChestBoneFillerClient implements ClientModInitializer {
         }
     }
 
-    boolean clickByName(MinecraftClient mc, String name) {
-        if (!(mc.currentScreen instanceof HandledScreen<?> s)) return false;
-        ScreenHandler h = s.getScreenHandler();
+    boolean clickByName(Minecraft mc, String name) {
+        if (!(mc.screen instanceof AbstractContainerScreen<?> s)) return false;
+        AbstractContainerMenu h = s.getMenu();
         for (Slot slot : h.slots) {
-            if (slot.getStack().isEmpty()) continue;
-            String n = slot.getStack().getName().getString().toLowerCase();
+            if (slot.getItem().isEmpty()) continue;
+            String n = slot.getItem().getHoverName().getString().toLowerCase();
             if (n.contains(name.toLowerCase())) {
-                mc.interactionManager.clickSlot(h.syncId, slot.id, 0,
-                    SlotActionType.PICKUP, mc.player);
+                mc.gameMode.handleInventoryMouseClick(h.containerId, slot.index, 0,
+                    ClickType.PICKUP, mc.player);
                 timeouts = 0;
                 return true;
             }
