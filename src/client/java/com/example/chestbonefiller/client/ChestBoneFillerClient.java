@@ -4,6 +4,7 @@ import com.mojang.blaze3d.platform.InputConstants;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
@@ -12,26 +13,37 @@ import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.ChestBlock;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.ChestType;
 import net.minecraft.world.phys.BlockHitResult;
-import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import org.lwjgl.glfw.GLFW;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class ChestBoneFillerClient implements ClientModInitializer {
 
-    // true = buy -> chest -> buy ... loop, false = sirf ek baar
-    static final boolean LOOP = false;
+    // chest kitni door tak open ho sakta hai (blocks). Reach 4.5 hai.
+    static final double REACH = 4.5;
 
-    static BlockPos chestPos = null;
-    static int state = 0;       // 0 = idle
-    static int wait = 0;        // ticks (20 = 1 sec)
+    static final List<BlockPos> chests = new ArrayList<>();
+    static boolean selectorOn = false;
+
+    static int idx = 0;          // abhi kaunsa chest
+    static int state = 0;        // 0 = idle
+    static int wait = 0;         // ticks (20 = 1 sec)
     static int lastBones = -1;
     static int stuck = 0;
     static int timeouts = 0;
+    static boolean justBought = false;
 
     KeyMapping selectKey, startKey, stopKey;
 
@@ -48,39 +60,79 @@ public class ChestBoneFillerClient implements ClientModInitializer {
             "key.chestbonefiller.stop", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_H, category));
 
         ClientTickEvents.END_CLIENT_TICK.register(this::tick);
+
+        // selector ON ho to chest par right-click = select / unselect
+        UseBlockCallback.EVENT.register((player, level, hand, hitResult) -> {
+            Minecraft mc = Minecraft.getInstance();
+            if (!selectorOn || level != mc.level) return InteractionResult.PASS;
+
+            BlockPos pos = hitResult.getBlockPos();
+            BlockState bs = level.getBlockState(pos);
+            if (!bs.is(Blocks.CHEST) && !bs.is(Blocks.TRAPPED_CHEST)) return InteractionResult.PASS;
+
+            // chest na khule, dono hands ke liye cancel
+            if (hand != InteractionHand.MAIN_HAND) return InteractionResult.FAIL;
+
+            // double chest ka doosra half
+            BlockPos other = null;
+            if (bs.getValue(ChestBlock.TYPE) != ChestType.SINGLE) {
+                other = pos.relative(ChestBlock.getConnectedDirection(bs));
+            }
+
+            if (chests.contains(pos)) {
+                chests.remove(pos);
+                msg(mc, "Chest hata diya. Total: " + chests.size());
+            } else if (other != null && chests.contains(other)) {
+                chests.remove(other);
+                msg(mc, "Chest hata diya. Total: " + chests.size());
+            } else {
+                chests.add(pos);
+                msg(mc, "Chest select hua: " + pos.toShortString() + " | Total: " + chests.size());
+            }
+            return InteractionResult.FAIL;
+        });
     }
 
     void msg(Minecraft mc, String s) {
-        mc.player.displayClientMessage(Component.literal("[ChestBoneFiller] " + s), false);
+        if (mc.player != null) {
+            mc.player.displayClientMessage(Component.literal("[ChestBoneFiller] " + s), false);
+        }
     }
 
     void tick(Minecraft mc) {
-        if (mc.player == null || mc.gameMode == null) return;
+        if (mc.player == null || mc.gameMode == null || mc.level == null) return;
 
-        // chest select: chest ko dekh ke R
+        // R: chest selector ON / OFF
         while (selectKey.consumeClick()) {
-            if (mc.hitResult instanceof BlockHitResult hit
-                    && hit.getType() == HitResult.Type.BLOCK) {
-                chestPos = hit.getBlockPos();
-                msg(mc, "Chest selected: " + chestPos.toShortString());
+            if (!selectorOn) {
+                chests.clear();
+                selectorOn = true;
+                msg(mc, "Chest selector ON - chest par right-click karo, dobara R se band karo");
             } else {
-                msg(mc, "Chest ko dekh ke dabao");
+                selectorOn = false;
+                msg(mc, "Chest selector OFF - " + chests.size() + " chest select hue");
             }
         }
 
-        // stop: H
+        // H: stop
         while (stopKey.consumeClick()) {
             state = 0;
             msg(mc, "Stopped");
         }
 
-        // start: G
+        // G: start
         while (startKey.consumeClick()) {
-            if (chestPos == null) {
-                msg(mc, "Pehle chest select karo (R)");
+            if (selectorOn) {
+                selectorOn = false;
+                msg(mc, "Chest selector OFF - " + chests.size() + " chest select hue");
+            }
+            if (chests.isEmpty()) {
+                msg(mc, "Pehle chests select karo (R)");
             } else {
-                state = 1; wait = 0; lastBones = -1; stuck = 0; timeouts = 0;
-                msg(mc, "Started");
+                idx = 0; lastBones = -1; stuck = 0; timeouts = 0; wait = 0;
+                justBought = false;
+                state = 6;   // pehle inventory ke bones chest me daalo
+                msg(mc, "Started (" + chests.size() + " chests)");
             }
         }
 
@@ -108,14 +160,31 @@ public class ChestBoneFillerClient implements ClientModInitializer {
                 if (slot.getItem().is(Items.BONE)) {
                     mc.gameMode.handleInventoryMouseClick(h.containerId, 26, 0, ClickType.PICKUP, mc.player);
                     timeouts = 0;
+                    justBought = true;
                     state = 6; wait = 15;
                 } else timeout(mc);
             }
-            // 6) selected chest kholo
+            // 6) current chest kholo
             case 6 -> {
+                if (idx >= chests.size()) {
+                    mc.player.closeContainer();
+                    state = 0;
+                    msg(mc, "Saare chests full / done");
+                    return;
+                }
+                BlockPos cp = chests.get(idx);
+
+                // reach se bahar ho to skip
+                if (mc.player.getEyePosition().distanceTo(Vec3.atCenterOf(cp)) > REACH + 0.5) {
+                    msg(mc, "Chest door hai, skip: " + cp.toShortString());
+                    idx++;
+                    wait = 2;
+                    return;
+                }
+
                 mc.player.closeContainer();
                 BlockHitResult hit = new BlockHitResult(
-                    Vec3.atCenterOf(chestPos), Direction.UP, chestPos, false);
+                    Vec3.atCenterOf(cp), Direction.UP, cp, false);
                 mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, hit);
                 state = 7; wait = 10; lastBones = -1; stuck = 0; timeouts = 0;
             }
@@ -136,24 +205,28 @@ public class ChestBoneFillerClient implements ClientModInitializer {
                     }
                 }
 
-                // inventory me bones khatam
+                // inventory me bones khatam -> shop se kharido
                 if (firstBone == -1) {
                     mc.player.closeContainer();
-                    if (LOOP) { state = 1; wait = 20; }
-                    else { state = 0; msg(mc, "Done"); }
+                    if (justBought) {
+                        state = 0;
+                        msg(mc, "Bones nahi mile (paise ya shop check karo), stopped");
+                    } else {
+                        state = 1; wait = 10;
+                    }
                     return;
                 }
 
-                // chest full check
+                // chest full check -> agle chest par jao
                 if (bones == lastBones) stuck++; else stuck = 0;
                 lastBones = bones;
                 if (stuck >= 5) {
-                    mc.player.closeContainer();
-                    state = 0;
-                    msg(mc, "Chest full, stopped");
+                    idx++;
+                    state = 6; wait = 5;
                     return;
                 }
 
+                justBought = false;
                 mc.gameMode.handleInventoryMouseClick(h.containerId, firstBone, 0,
                     ClickType.QUICK_MOVE, mc.player);
                 wait = 3;
