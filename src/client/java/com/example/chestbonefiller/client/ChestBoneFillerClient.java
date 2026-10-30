@@ -13,6 +13,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
+import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.inventory.AbstractContainerMenu;
@@ -39,7 +40,14 @@ public class ChestBoneFillerClient implements ClientModInitializer {
     static final int BUY_SLOT = 26;           // 36 wali bone
     static final int CLICKS_PER_TICK = 36;    // ek burst me kitni stacks chest me
 
-    // ---- DELAYS (ticks me, 20 ticks = 1 second). Tez karna ho to kam, dheema karna ho to zyada ----
+    // ---- AUTO WALK ----
+    static final boolean AUTO_WALK = true;    // false = door wale chest skip honge
+    static final double WALK_STOP_DIST = 3.5; // chest se itni doori par ruk jao
+    static final int WALK_TIMEOUT = 200;      // 10 sec me na pahunche to chest skip
+    static final float MAX_TURN = 45f;        // ek tick me max kitna mudna hai (degrees)
+    static final boolean SPRINT = false;      // true = daudte hue chale
+
+    // ---- DELAYS (ticks me, 20 ticks = 1 second) ----
     static final int DELAY_AFTER_SHOP_CMD   = 14;  // /shop ke baad menu khulne tak
     static final int DELAY_SHOP_STEP        = 8;   // Mod Drops, Bone, Buy More ke baad
     static final int DELAY_AFTER_BUY        = 10;  // 36 bone kharidne ke baad
@@ -57,6 +65,7 @@ public class ChestBoneFillerClient implements ClientModInitializer {
     static int lastBones = -1;
     static int stuck = 0;
     static int timeouts = 0;
+    static int walkTicks = 0;
     static boolean justBought = false;
 
     KeyMapping selectKey, startKey, stopKey;
@@ -110,6 +119,13 @@ public class ChestBoneFillerClient implements ClientModInitializer {
         }
     }
 
+    // walking wali saari keys chhod do
+    void releaseKeys(Minecraft mc) {
+        mc.options.keyUp.setDown(false);
+        mc.options.keyJump.setDown(false);
+        mc.options.keySprint.setDown(false);
+    }
+
     // naam ko saaf karo: colour codes, small caps, custom icons, spaces sab hata do
     static String normalize(String s) {
         if (s == null) return "";
@@ -147,6 +163,7 @@ public class ChestBoneFillerClient implements ClientModInitializer {
         while (stopKey.consumeClick()) { stopHeld = true; }
         if (stopHeld && state != 0) {
             state = 0;
+            releaseKeys(mc);
             mc.player.closeContainer();
             msg(mc, "Stopped");
             return;
@@ -161,7 +178,7 @@ public class ChestBoneFillerClient implements ClientModInitializer {
             if (chests.isEmpty()) {
                 msg(mc, "Pehle chests select karo (R)");
             } else {
-                idx = 0; lastBones = -1; stuck = 0; timeouts = 0; wait = 0;
+                idx = 0; lastBones = -1; stuck = 0; timeouts = 0; wait = 0; walkTicks = 0;
                 justBought = false;
                 state = 6;   // pehle inventory ke bones chest me daalo
                 msg(mc, "Started (" + chests.size() + " chests)");
@@ -199,9 +216,10 @@ public class ChestBoneFillerClient implements ClientModInitializer {
                     state = 6; wait = DELAY_AFTER_BUY;
                 } else timeout(mc);
             }
-            // 6) current chest kholo
+            // 6) current chest kholo (door ho to chal ke jao)
             case 6 -> {
                 if (idx >= chests.size()) {
+                    releaseKeys(mc);
                     mc.player.closeContainer();
                     state = 0;
                     msg(mc, "Saare chests full / done");
@@ -209,10 +227,16 @@ public class ChestBoneFillerClient implements ClientModInitializer {
                 }
                 BlockPos cp = chests.get(idx);
 
-                if (mc.player.getEyePosition().distanceTo(Vec3.atCenterOf(cp)) > REACH + 0.5) {
-                    msg(mc, "Chest door hai, skip: " + cp.toShortString());
-                    idx++;
-                    wait = 2;
+                if (mc.player.getEyePosition().distanceTo(Vec3.atCenterOf(cp)) > REACH) {
+                    if (AUTO_WALK) {
+                        mc.player.closeContainer();   // GUI band, tabhi chal sakte hain
+                        walkTicks = 0;
+                        state = 8; wait = 2;
+                    } else {
+                        msg(mc, "Chest door hai, skip: " + cp.toShortString());
+                        idx++;
+                        wait = 2;
+                    }
                     return;
                 }
 
@@ -271,6 +295,43 @@ public class ChestBoneFillerClient implements ClientModInitializer {
                 }
                 wait = DELAY_BETWEEN_BURSTS;
             }
+            // 8) chest ki taraf chalo
+            case 8 -> {
+                if (idx >= chests.size()) { releaseKeys(mc); state = 6; return; }
+                Vec3 target = Vec3.atCenterOf(chests.get(idx));
+                Vec3 eye = mc.player.getEyePosition();
+
+                // pahunch gaye
+                if (eye.distanceTo(target) <= WALK_STOP_DIST) {
+                    releaseKeys(mc);
+                    state = 6; wait = 3; walkTicks = 0;
+                    return;
+                }
+
+                // time khatam: skip
+                if (++walkTicks > WALK_TIMEOUT) {
+                    releaseKeys(mc);
+                    msg(mc, "Chest tak pahunch nahi paya, skip: " + chests.get(idx).toShortString());
+                    idx++;
+                    state = 6; wait = 2; walkTicks = 0;
+                    return;
+                }
+
+                // chest ki taraf dheere mudo
+                double dx = target.x - mc.player.getX();
+                double dz = target.z - mc.player.getZ();
+                float want = (float) Math.toDegrees(Math.atan2(-dx, dz));
+                float cur = mc.player.getYRot();
+                float diff = Mth.wrapDegrees(want - cur);
+                mc.player.setYRot(cur + Mth.clamp(diff, -MAX_TURN, MAX_TURN));
+                mc.player.setXRot(0f);
+
+                // seedha ho jaye tabhi aage chalo
+                boolean facing = Math.abs(diff) < 40f;
+                mc.options.keyUp.setDown(facing);
+                mc.options.keySprint.setDown(facing && SPRINT);
+                mc.options.keyJump.setDown(facing && mc.player.horizontalCollision);
+            }
         }
     }
 
@@ -280,6 +341,7 @@ public class ChestBoneFillerClient implements ClientModInitializer {
             timeouts = 0;
             int failedStep = state;
             state = 0;
+            releaseKeys(mc);
             msg(mc, "Step " + failedStep + " par ruk gaya (2=Mod Drops, 3=Bone, 4=Buy More, 5=slot 26, 7=chest)");
             if (mc.screen instanceof AbstractContainerScreen<?> s) {
                 AbstractContainerMenu h = s.getMenu();
