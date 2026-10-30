@@ -37,7 +37,7 @@ public class ChestBoneFillerClient implements ClientModInitializer {
     static final double REACH = 4.5;          // chest kholne ki max doori (blocks)
     static final int BONE_SLOT = 20;          // Mod Drops menu me bone (pehle ye slot try hoga)
     static final int BUY_SLOT = 26;           // 36 wali bone
-    static final int CLICKS_PER_TICK = 9;     // chest me ek baar me kitni stacks
+    static final int CLICKS_PER_TICK = 36;    // ek tick me saari bones chest me
 
     static final List<BlockPos> chests = new ArrayList<>();
     static boolean selectorOn = false;
@@ -166,28 +166,28 @@ public class ChestBoneFillerClient implements ClientModInitializer {
             // 1) /shop
             case 1 -> {
                 mc.player.connection.sendCommand("shop");
-                state = 2; wait = 20;
+                state = 2; wait = 8;
             }
             // 2) Mod Drops
             case 2 -> {
-                if (clickByAnyName(mc, "moddrops", "mobdrops", "drops")) { state = 3; wait = 15; }
+                if (clickByAnyName(mc, "moddrops", "mobdrops", "drops")) { state = 3; wait = 4; }
                 else timeout(mc);
             }
             // 3) Bone (pehle slot 20, nahi to pehli bone jo mile)
             case 3 -> {
-                if (clickBoneAt(mc, BONE_SLOT) || clickFirstBone(mc)) { state = 4; wait = 15; }
+                if (clickBoneAt(mc, BONE_SLOT) || clickFirstBone(mc)) { state = 4; wait = 4; }
                 else timeout(mc);
             }
             // 4) Buy More
             case 4 -> {
-                if (clickByAnyName(mc, "buymore", "more")) { state = 5; wait = 15; }
+                if (clickByAnyName(mc, "buymore", "more")) { state = 5; wait = 4; }
                 else timeout(mc);
             }
             // 5) 36 wali bone (slot 26)
             case 5 -> {
                 if (clickBoneAt(mc, BUY_SLOT)) {
                     justBought = true;
-                    state = 6; wait = 15;
+                    state = 6; wait = 6;
                 } else timeout(mc);
             }
             // 6) current chest kholo
@@ -211,9 +211,9 @@ public class ChestBoneFillerClient implements ClientModInitializer {
                 BlockHitResult hit = new BlockHitResult(
                     Vec3.atCenterOf(cp), Direction.UP, cp, false);
                 mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, hit);
-                state = 7; wait = 10; lastBones = -1; stuck = 0; timeouts = 0;
+                state = 7; wait = 4; lastBones = -1; stuck = 0; timeouts = 0;
             }
-            // 7) bones chest me shift-click
+            // 7) bones chest me shift-click (ek saath)
             case 7 -> {
                 if (!(mc.screen instanceof AbstractContainerScreen<?> s)) { timeout(mc); return; }
                 AbstractContainerMenu h = s.getMenu();
@@ -237,7 +237,7 @@ public class ChestBoneFillerClient implements ClientModInitializer {
                         state = 0;
                         msg(mc, "Bones nahi mile (paise ya inventory space check karo), stopped");
                     } else {
-                        state = 1; wait = 10;
+                        state = 1; wait = 5;
                     }
                     return;
                 }
@@ -245,9 +245,9 @@ public class ChestBoneFillerClient implements ClientModInitializer {
                 // chest full check -> agle chest par jao
                 if (bones == lastBones) stuck++; else stuck = 0;
                 lastBones = bones;
-                if (stuck >= 5) {
+                if (stuck >= 4) {
                     idx++;
-                    state = 6; wait = 5;
+                    state = 6; wait = 2;
                     return;
                 }
 
