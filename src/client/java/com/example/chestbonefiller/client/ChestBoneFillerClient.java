@@ -1,4 +1,4 @@
-package com.example.chesbonefiller;
+package com.example.chestbonefiller.client;
 
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -21,7 +21,7 @@ import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 import org.lwjgl.glfw.GLFW;
 
-public class BoneMacro implements ClientModInitializer {
+public class ChestBoneFillerClient implements ClientModInitializer {
 
     // true = buy -> chest -> buy ... loop, false = sirf ek baar
     static final boolean LOOP = false;
@@ -38,20 +38,20 @@ public class BoneMacro implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         KeyBinding.Category category =
-            KeyBinding.Category.create(Identifier.of("chesbonefiller", "main"));
+            KeyBinding.Category.create(Identifier.of("chestbonefiller", "main"));
 
         selectKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.chesbonefiller.select", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_R, category));
+            "key.chestbonefiller.select", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_R, category));
         startKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.chesbonefiller.start", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_G, category));
+            "key.chestbonefiller.start", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_G, category));
         stopKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.chesbonefiller.stop", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_H, category));
+            "key.chestbonefiller.stop", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_H, category));
 
         ClientTickEvents.END_CLIENT_TICK.register(this::tick);
     }
 
     void msg(MinecraftClient mc, String s) {
-        mc.player.sendMessage(Text.literal("[ChesBoneFiller] " + s), false);
+        mc.player.sendMessage(Text.literal("[ChestBoneFiller] " + s), false);
     }
 
     void tick(MinecraftClient mc) {
@@ -123,4 +123,65 @@ public class BoneMacro implements ClientModInitializer {
             case 7 -> {
                 if (!(mc.currentScreen instanceof HandledScreen<?> s)) { timeout(mc); return; }
                 ScreenHandler h = s.getScreenHandler();
-                int
+                int chestSize = h.slots.size() - 36;
+                if (chestSize <= 0) { timeout(mc); return; }
+                timeouts = 0;
+
+                int bones = 0;
+                int firstBone = -1;
+                for (int i = chestSize; i < h.slots.size(); i++) {
+                    if (h.slots.get(i).getStack().isOf(Items.BONE)) {
+                        bones += h.slots.get(i).getStack().getCount();
+                        if (firstBone == -1) firstBone = i;
+                    }
+                }
+
+                // inventory me bones khatam
+                if (firstBone == -1) {
+                    mc.player.closeHandledScreen();
+                    if (LOOP) { state = 1; wait = 20; }
+                    else { state = 0; msg(mc, "Done"); }
+                    return;
+                }
+
+                // chest full check
+                if (bones == lastBones) stuck++; else stuck = 0;
+                lastBones = bones;
+                if (stuck >= 5) {
+                    mc.player.closeHandledScreen();
+                    state = 0;
+                    msg(mc, "Chest full, stopped");
+                    return;
+                }
+
+                mc.interactionManager.clickSlot(h.syncId, firstBone, 0,
+                    SlotActionType.QUICK_MOVE, mc.player);
+                wait = 3;
+            }
+        }
+    }
+
+    void timeout(MinecraftClient mc) {
+        if (++timeouts > 100) {   // ~5 sec tak GUI nahi mila
+            timeouts = 0;
+            state = 0;
+            msg(mc, "GUI nahi mila, stopped (slot ka naam check karo)");
+        }
+    }
+
+    boolean clickByName(MinecraftClient mc, String name) {
+        if (!(mc.currentScreen instanceof HandledScreen<?> s)) return false;
+        ScreenHandler h = s.getScreenHandler();
+        for (Slot slot : h.slots) {
+            if (slot.getStack().isEmpty()) continue;
+            String n = slot.getStack().getName().getString().toLowerCase();
+            if (n.contains(name.toLowerCase())) {
+                mc.interactionManager.clickSlot(h.syncId, slot.id, 0,
+                    SlotActionType.PICKUP, mc.player);
+                timeouts = 0;
+                return true;
+            }
+        }
+        return false;
+    }
+}
